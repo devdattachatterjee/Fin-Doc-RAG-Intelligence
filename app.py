@@ -1,58 +1,86 @@
 import streamlit as st
-from transformers import AutoTokenizer, DistilBertForSequenceClassification
-import torch
-import torch.nn.functional as F
-import plotly.express as px
-import pandas as pd
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.vectorstores import FAISS
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain.chains import RetrievalQA
 
-# --- Page Configuration ---
-st.set_page_config(page_title="Fin-Intelligence NLP", page_icon="📈", layout="wide")
+# --- 1. Setup & CSS ---
+st.set_page_config(page_title="Fin-Doc RAG Intelligence", page_icon="🏦", layout="wide")
 
-# --- 1. CSS Visibility Fix ---
 st.markdown("""
     <style>
-    .main { background-color: #f0f2f6; }
-    [data-testid="stMetricLabel"] { color: #31333F !important; font-weight: bold !important; font-size: 16px !important; }
-    [data-testid="stMetricValue"] { color: #000000 !important; font-size: 24px !important; }
-    div[data-testid="stMetric"] { background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e0e0e0; }
+    .stApp { background-color: #0e1117; color: #ffffff; }
+    [data-testid="stSidebar"] { background-color: #161b22; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. Model Loading ---
-@st.cache_resource
-def load_model():
-    tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
-    model = DistilBertForSequenceClassification.from_pretrained("Devda1421/financial-sentiment-distilbert")
-    model.eval()
-    return tokenizer, model
+# --- 2. Authentication ---
+# Using .get() to prevent crashing if the secret isn't there yet
+api_key = st.secrets.get("OPENAI_API_KEY") or st.sidebar.text_input("Enter OpenAI API Key", type="password")
 
-tokenizer, model = load_model()
-label_map = {0: "Negative 🔴", 1: "Neutral ⚪", 2: "Positive 🟢"}
-label_names = ["Negative", "Neutral", "Positive"]
+if api_key:
+    try:
+        embeddings = OpenAIEmbeddings(openai_api_key=api_key)
+        llm = ChatOpenAI(model_name="gpt-4o-mini", openai_api_key=api_key)
 
-# --- 3. UI Layout ---
-st.title("📊 Financial Sentiment Intelligence")
-col_left, col_right = st.columns([1, 1], gap="large")
-
-with col_left:
-    st.subheader("📝 News Headline Input")
-    headline_input = st.text_area("Enter financial context:", height=180, placeholder="Type news here...")
-    analyze_btn = st.button("🔍 Run Signal Analysis", type="primary", use_container_width=True)
-
-with col_right:
-    st.subheader("🎯 Analysis Output")
-    if analyze_btn and headline_input:
-        inputs = tokenizer(headline_input, return_tensors="pt", padding=True, truncation=True, max_length=128)
-        with torch.no_grad():
-            outputs = model(**inputs)
-        probs = F.softmax(outputs.logits, dim=-1)[0].tolist()
-        pred_idx = probs.index(max(probs))
+        # --- 3. Sidebar: Document Processing ---
+        st.sidebar.header("📁 Data Ingestion")
+        uploaded_file = st.sidebar.file_uploader("Upload Financial PDF", type="pdf")
         
-        m_col1, m_col2 = st.columns(2)
-        m_col1.metric("Market Sentiment", label_map[pred_idx])
-        m_col2.metric("Confidence", f"{probs[pred_idx]*100:.1f}%")
-        
-        fig = px.bar(pd.DataFrame({'Sentiment': label_names, 'Prob': probs}), x='Sentiment', y='Prob', color='Sentiment')
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("💡 Awaiting input for analysis.")
+        if uploaded_file:
+            if "vector_db" not in st.session_state:
+                with st.status("🧠 Processing document for RAG...", expanded=True) as status:
+                    with open("temp.pdf", "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    
+                    loader = PyPDFLoader("temp.pdf")
+                    docs = loader.load()
+                    
+                    # Splitting text to fit LLM context windows
+                    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+                    texts = splitter.split_documents(docs)
+                    
+                    # Creating the searchable vector database
+                    st.session_state.vector_db = FAISS.from_documents(texts, embeddings)
+                    status.update(label="✅ Knowledge Base Ready!", state="complete", expanded=False)
+
+        # --- 4. Chat Interface ---
+        st.title("🤖 Financial Signal Assistant")
+        st.caption("Factual analysis of banking reports using RAG architecture")
+
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+
+        # Display history
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        # User input
+        if prompt := st.chat_input("Ask a question about the uploaded file..."):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            if "vector_db" in st.session_state:
+                with st.chat_message("assistant"):
+                    with st.spinner("Retrieving facts..."):
+                        qa_chain = RetrievalQA.from_chain_type(
+                            llm=llm, 
+                            chain_type="stuff", 
+                            retriever=st.session_state.vector_db.as_retriever()
+                        )
+                        # Updated .invoke() syntax for LangChain 2026 compatibility
+                        response = qa_chain.invoke({"query": prompt})
+                        answer = response["result"]
+                        
+                        st.markdown(answer)
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
+            else:
+                st.error("Please upload a PDF in the sidebar first!")
+                
+    except Exception as e:
+        st.error(f"Configuration Error: {e}")
+else:
+    st.info("🔑 Please enter your OpenAI API Key in the sidebar or add it to Streamlit Secrets to begin.")
