@@ -1,8 +1,5 @@
 streamlit
-langchain
-langchain-openai
-langchain-community
-langchain-core
-faiss-cpu
+openai
 pypdf
-langchain-text-splitters
+faiss-cpu
+numpy
