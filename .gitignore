@@ -1,0 +1,14 @@
+# Local Streamlit Secrets
+.streamlit/secrets.toml
+
+# Virtual Environments
+.venv/
+venv/
+env/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+
+# Local Temporary Files
+temp.pdf
