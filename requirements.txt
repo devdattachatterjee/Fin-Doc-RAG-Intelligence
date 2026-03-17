@@ -4,4 +4,4 @@ langchain-openai
 langchain-community
 faiss-cpu
 pypdf
-tiktoken
+langchain-text-splitters
