@@ -1,42 +1,69 @@
 import streamlit as st
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-# The Modern LangChain Imports
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate
+from openai import OpenAI
+import pypdf
+import faiss
+import numpy as np
 
-# --- 1. Page Config ---
+# --- 1. Page Configuration ---
 st.set_page_config(page_title="Fin-Doc RAG Intelligence", page_icon="🏦", layout="wide")
+st.markdown("""<style>.stApp { background-color: #0e1117; color: #ffffff; }</style>""", unsafe_allow_html=True)
 
-# --- 2. Authentication ---
+# --- 2. Pure Python Text Chunker ---
+def get_text_chunks(text, chunk_size=1000, overlap=150):
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start += chunk_size - overlap
+    return chunks
+
+# --- 3. Authentication ---
 api_key = st.secrets.get("OPENAI_API_KEY") or st.sidebar.text_input("Enter OpenAI API Key", type="password")
 
 if api_key:
     try:
-        embeddings = OpenAIEmbeddings(openai_api_key=api_key)
-        llm = ChatOpenAI(model_name="gpt-4o-mini", openai_api_key=api_key, temperature=0)
+        # Initialize official OpenAI Client
+        client = OpenAI(api_key=api_key)
 
-        # --- 3. Sidebar Upload ---
+        # --- 4. Document Processing (Vanilla Python) ---
+        st.sidebar.header("📁 Data Ingestion")
         uploaded_file = st.sidebar.file_uploader("Upload Financial PDF", type="pdf")
         
         if uploaded_file:
-            if "vector_db" not in st.session_state:
-                with st.spinner("Processing document..."):
-                    with open("temp.pdf", "wb") as f:
-                        f.write(uploaded_file.getbuffer())
+            if "vector_index" not in st.session_state:
+                with st.status("🧠 Processing document from scratch...", expanded=True) as status:
+                    # 4a. Read PDF
+                    st.write("Extracting raw text...")
+                    pdf_reader = pypdf.PdfReader(uploaded_file)
+                    raw_text = ""
+                    for page in pdf_reader.pages:
+                        raw_text += page.extract_text() + "\n"
                     
-                    loader = PyPDFLoader("temp.pdf")
-                    docs = loader.load()
-                    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-                    texts = splitter.split_documents(docs)
-                    st.session_state.vector_db = FAISS.from_documents(texts, embeddings)
-                    st.success("✅ Knowledge Base Ready!")
+                    # 4b. Chunk Text
+                    st.write("Chunking text manually...")
+                    chunks = get_text_chunks(raw_text)
+                    st.session_state.chunks = chunks
+                    
+                    # 4c. Generate Embeddings (OpenAI API)
+                    st.write("Generating vector embeddings...")
+                    response = client.embeddings.create(input=chunks, model="text-embedding-3-small")
+                    embeddings = [data.embedding for data in response.data]
+                    embedding_matrix = np.array(embeddings, dtype=np.float32)
+                    
+                    # 4d. Build FAISS Index
+                    st.write("Building FAISS index...")
+                    dimension = embedding_matrix.shape[1]
+                    index = faiss.IndexFlatL2(dimension)
+                    index.add(embedding_matrix)
+                    st.session_state.vector_index = index
+                    
+                    status.update(label="✅ Knowledge Base Ready!", state="complete", expanded=False)
 
-        # --- 4. Chat Interface ---
+        # --- 5. Chat Interface ---
         st.title("🤖 Financial Signal Assistant")
+        st.caption("Custom-Built RAG Architecture (Zero Framework Dependencies)")
+
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
@@ -44,38 +71,43 @@ if api_key:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-        if prompt := st.chat_input("Ask about the document..."):
+        if prompt := st.chat_input("Ask a question about the uploaded file..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
-            if "vector_db" in st.session_state:
+            if "vector_index" in st.session_state:
                 with st.chat_message("assistant"):
-                    
-                    # Modern LangChain Prompt & Chain Setup
-                    system_prompt = (
-                        "You are a financial analysis assistant. Use the retrieved context to answer the question. "
-                        "If you don't know the answer, say that you don't know. Keep your answers factual.\n\n"
-                        "{context}"
-                    )
-                    prompt_template = ChatPromptTemplate.from_messages([
-                        ("system", system_prompt),
-                        ("human", "{input}"),
-                    ])
-                    
-                    question_answer_chain = create_stuff_documents_chain(llm, prompt_template)
-                    qa_chain = create_retrieval_chain(st.session_state.vector_db.as_retriever(), question_answer_chain)
-                    
-                    # Execute the chain
-                    response = qa_chain.invoke({"input": prompt})
-                    answer = response["answer"]
-                    
-                    st.markdown(answer)
-                    st.session_state.messages.append({"role": "assistant", "content": answer})
+                    with st.spinner("Retrieving facts..."):
+                        
+                        # Step A: Embed the user's question
+                        query_res = client.embeddings.create(input=[prompt], model="text-embedding-3-small")
+                        query_embed = np.array([query_res.data[0].embedding], dtype=np.float32)
+                        
+                        # Step B: Search the FAISS index for the top 3 closest chunks
+                        distances, indices = st.session_state.vector_index.search(query_embed, k=3)
+                        retrieved_chunks = [st.session_state.chunks[i] for i in indices[0]]
+                        context_string = "\n\n---\n\n".join(retrieved_chunks)
+                        
+                        # Step C: Send Context + Question to GPT-4o-mini
+                        system_prompt = f"You are a helpful financial assistant. Answer the user's question strictly based on the following context:\n\n{context_string}"
+                        
+                        llm_response = client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": prompt}
+                            ],
+                            temperature=0
+                        )
+                        
+                        answer = llm_response.choices[0].message.content
+                        st.markdown(answer)
+                        st.session_state.messages.append({"role": "assistant", "content": answer})
             else:
-                st.error("Please upload a PDF first!")
+                st.error("Please upload a PDF in the sidebar first!")
                 
     except Exception as e:
         st.error(f"Error: {e}")
 else:
-    st.info("🔑 Please enter your OpenAI API Key in the sidebar or add it to Streamlit Secrets.")
+    st.info("🔑 Please enter your OpenAI API Key in the sidebar or add it to Streamlit Secrets to begin.")
