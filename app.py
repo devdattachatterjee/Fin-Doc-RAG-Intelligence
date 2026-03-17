@@ -1,111 +1,58 @@
 import streamlit as st
+from transformers import AutoTokenizer, DistilBertForSequenceClassification
+import torch
+import torch.nn.functional as F
+import plotly.express as px
 import pandas as pd
-import os
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.chains.retrieval_qa.base import RetrievalQA
 
-# --- Page Config & UI Styling ---
-st.set_page_config(page_title="Fin-Doc RAG Intelligence", page_icon="🏦", layout="wide")
+# --- Page Configuration ---
+st.set_page_config(page_title="Fin-Intelligence NLP", page_icon="📈", layout="wide")
 
-# Custom CSS for a dark, professional "Banking Terminal" look
+# --- 1. CSS Visibility Fix ---
 st.markdown("""
     <style>
-    .stApp { background-color: #0e1117; color: #ffffff; }
-    [data-testid="stMetric"] { background-color: #1e2130; border-radius: 10px; padding: 15px; border: 1px solid #3e4251; }
-    [data-testid="stSidebar"] { background-color: #161b22; }
-    .stChatMessage { border-radius: 15px; margin-bottom: 10px; }
+    .main { background-color: #f0f2f6; }
+    [data-testid="stMetricLabel"] { color: #31333F !important; font-weight: bold !important; font-size: 16px !important; }
+    [data-testid="stMetricValue"] { color: #000000 !important; font-size: 24px !important; }
+    div[data-testid="stMetric"] { background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #e0e0e0; }
     </style>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
-# --- 1. Load Resources (Cached for Speed) ---
+# --- 2. Model Loading ---
 @st.cache_resource
-def get_tools():
-    # Only use secrets if they exist, otherwise app will prompt in sidebar
-    try:
-        api_key = st.secrets["OPENAI_API_KEY"]
-        return OpenAIEmbeddings(openai_api_key=api_key), ChatOpenAI(model_name="gpt-4o-mini", openai_api_key=api_key)
-    except:
-        return None, None
+def load_model():
+    tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
+    model = DistilBertForSequenceClassification.from_pretrained("Devda1421/financial-sentiment-distilbert")
+    model.eval()
+    return tokenizer, model
 
-embeddings, llm = get_tools()
+tokenizer, model = load_model()
+label_map = {0: "Negative 🔴", 1: "Neutral ⚪", 2: "Positive 🟢"}
+label_names = ["Negative", "Neutral", "Positive"]
 
-# --- 2. Sidebar: Document Management ---
-with st.sidebar:
-    st.title("🏦 Fin-Doc Control")
-    st.markdown("---")
-    uploaded_file = st.file_uploader("Ingest Financial PDF", type="pdf")
-    
-    if not embeddings:
-        st.warning("⚠️ OpenAI API Key not found in Secrets.")
-        user_key = st.text_input("Enter API Key manually:", type="password")
-        if user_key:
-            embeddings = OpenAIEmbeddings(openai_api_key=user_key)
-            llm = ChatOpenAI(model_name="gpt-4o-mini", openai_api_key=user_key)
+# --- 3. UI Layout ---
+st.title("📊 Financial Sentiment Intelligence")
+col_left, col_right = st.columns([1, 1], gap="large")
 
-# --- 3. Knowledge Base Ingestion ---
-if uploaded_file and embeddings:
-    if "vector_db" not in st.session_state:
-        with st.status("🏗️ Building Knowledge Base...", expanded=True) as status:
-            # Save and load
-            with open("temp.pdf", "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            st.write("📄 Parsing Document...")
-            loader = PyPDFLoader("temp.pdf")
-            docs = loader.load()
-            
-            st.write("✂️ Splitting for Contextual Accuracy...")
-            splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-            texts = splitter.split_documents(docs)
-            
-            st.write("🧠 Generating Semantic Embeddings...")
-            st.session_state.vector_db = FAISS.from_documents(texts, embeddings)
-            status.update(label="✅ Knowledge Base Ready!", state="complete", expanded=False)
+with col_left:
+    st.subheader("📝 News Headline Input")
+    headline_input = st.text_area("Enter financial context:", height=180, placeholder="Type news here...")
+    analyze_btn = st.button("🔍 Run Signal Analysis", type="primary", use_container_width=True)
 
-# --- 4. Conversational Interface ---
-st.title("🤖 Financial Signal Assistant")
-st.caption("Context-Aware Analysis of Regulatory and Corporate Filings")
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Display Chat History
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-# Chat Input
-if prompt := st.chat_input("Query the document (e.g., 'Analyze the GNPA trends')"):
-    # Add User Message
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    # RAG Logic
-    if "vector_db" in st.session_state:
-        with st.chat_message("assistant"):
-            with st.spinner("Retrieving facts..."):
-                qa_chain = RetrievalQA.from_chain_type(
-                    llm=llm,
-                    chain_type="stuff",
-                    retriever=st.session_state.vector_db.as_retriever(search_kwargs={"k": 3}),
-                    return_source_documents=True
-                )
-                response = qa_chain({"query": prompt})
-                answer = response["result"]
-                sources = response["source_documents"]
-                
-                st.markdown(answer)
-                
-                # Professional Source Citation Layout
-                with st.expander("📍 View Source Evidence"):
-                    for i, doc in enumerate(sources):
-                        st.markdown(f"**Source {i+1} (Page {doc.metadata.get('page', 'N/A')})**")
-                        st.caption(doc.page_content[:300] + "...")
-
-                st.session_state.messages.append({"role": "assistant", "content": answer})
+with col_right:
+    st.subheader("🎯 Analysis Output")
+    if analyze_btn and headline_input:
+        inputs = tokenizer(headline_input, return_tensors="pt", padding=True, truncation=True, max_length=128)
+        with torch.no_grad():
+            outputs = model(**inputs)
+        probs = F.softmax(outputs.logits, dim=-1)[0].tolist()
+        pred_idx = probs.index(max(probs))
+        
+        m_col1, m_col2 = st.columns(2)
+        m_col1.metric("Market Sentiment", label_map[pred_idx])
+        m_col2.metric("Confidence", f"{probs[pred_idx]*100:.1f}%")
+        
+        fig = px.bar(pd.DataFrame({'Sentiment': label_names, 'Prob': probs}), x='Sentiment', y='Prob', color='Sentiment')
+        st.plotly_chart(fig, use_container_width=True)
     else:
-        st.error("Please upload a document first to activate the AI assistant.")
+        st.info("💡 Awaiting input for analysis.")
