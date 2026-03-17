@@ -4,9 +4,59 @@ import pypdf
 import faiss
 import numpy as np
 
-# --- 1. Page Configuration ---
+# --- 1. Page Configuration & Enterprise UI ---
 st.set_page_config(page_title="Fin-Doc RAG Intelligence", page_icon="🏦", layout="wide")
-st.markdown("""<style>.stApp { background-color: #0e1117; color: #ffffff; }</style>""", unsafe_allow_html=True)
+
+st.markdown("""
+    <style>
+    /* Main Background and Text */
+    .stApp { 
+        background-color: #0b0f19; 
+        color: #e2e8f0; 
+        font-family: 'Inter', sans-serif;
+    }
+    
+    /* Hide Streamlit Branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Sidebar Styling */
+    [data-testid="stSidebar"] { 
+        background-color: #111827; 
+        border-right: 1px solid #1f2937;
+    }
+    
+    /* Clean up the File Uploader */
+    [data-testid="stFileUploadDropzone"] {
+        border: 2px dashed #3b82f6;
+        background-color: #1e293b;
+        border-radius: 10px;
+    }
+    
+    /* Chat Message Bubbles */
+    [data-testid="stChatMessage"] {
+        background-color: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 15px;
+        margin-bottom: 10px;
+    }
+    
+    /* Buttons */
+    .stButton>button {
+        background-color: #2563eb;
+        color: white;
+        border-radius: 6px;
+        border: none;
+        transition: 0.3s;
+    }
+    .stButton>button:hover {
+        background-color: #1d4ed8;
+        border: 1px solid #60a5fa;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- 2. Pure Python Text Chunker ---
 def get_text_chunks(text, chunk_size=1000, overlap=150):
@@ -90,7 +140,7 @@ if api_key:
                         context_string = "\n\n---\n\n".join(retrieved_chunks)
                         
                         # Step C: Send Context + Question to GPT-4o-mini
-                        system_prompt = f"You are a helpful financial assistant. Answer the user's question strictly based on the following context:\n\n{context_string}"
+                        system_prompt = f"You are a highly capable financial assistant. Answer the user's question strictly based on the following extracted document context. If the answer is not in the context, state that you do not know based on the provided text.\n\n{context_string}"
                         
                         llm_response = client.chat.completions.create(
                             model="gpt-4o-mini",
