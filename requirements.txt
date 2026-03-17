@@ -6,4 +6,3 @@ langchain-core
 faiss-cpu
 pypdf
 langchain-text-splitters
-langchain.chains
